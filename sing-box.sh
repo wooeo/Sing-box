@@ -21,36 +21,36 @@ log_dir="/var/log/singbox.log"
 
 # 检查 sing-box 是否已安装
 check_singbox() {
-    if [ -f "${work_dir}/${server_name}" ]; then
-        if [ -f /etc/alpine-release ]; then
-            rc-service sing-box status | grep -q "started" && echo -e "${green}running${re}" && return 0 || echo -e "${yellow}not running${re}" && return 1
-        else 
-            [ "$(systemctl is-active sing-box)" = "active" ] && echo -e "${green}running${re}" && return 0 || echo -e "${yellow}not running${re}" && return 1
-        fi
-    else
-        echo -e "${red}not installed${re}"
-        return 2
+if [ -f "${work_dir}/${server_name}" ]; then
+    if [ -f /etc/alpine-release ]; then
+        rc-service sing-box status | grep -q "started" && echo -e "${green}running${re}" && return 0 || echo -e "${yellow}not running${re}" && return 1
+    else 
+        [ "$(systemctl is-active sing-box)" = "active" ] && echo -e "${green}running${re}" && return 0 || echo -e "${yellow}not running${re}" && return 1
     fi
+else
+    echo -e "${red}not installed${re}"
+    return 2
+fi
 }
 
 # 检查 argo 是否已安装
 check_argo() {
-    if [ -f "${work_dir}/argo" ]; then
-        if [ -f /etc/alpine-release ]; then
-            rc-service argo status | grep -q "started" && echo -e "${green}running${re}" && return 0 || echo -e "${yellow}not running${re}" && return 1
-        else 
-            [ "$(systemctl is-active argo)" = "active" ] && echo -e "${green}running${re}" && return 0 || echo -e "${ywllow}not running${re}" && return 1
-        fi
-    else
-        echo -e "${red}not installed${re}"
-        return 2
+if [ -f "${work_dir}/argo" ]; then
+    if [ -f /etc/alpine-release ]; then
+        rc-service argo status | grep -q "started" && echo -e "${green}running${re}" && return 0 || echo -e "${yellow}not running${re}" && return 1
+    else 
+        [ "$(systemctl is-active argo)" = "active" ] && echo -e "${green}running${re}" && return 0 || echo -e "${ywllow}not running${re}" && return 1
     fi
+else
+    echo -e "${red}not installed${re}"
+    return 2
+fi
 }
 
 #根据系统类型安装、卸载依赖
 manage_packages() {
     if [ $# -lt 2 ]; then
-        echo -e "${red}Unspecified package name or action${re}"
+        echo -e "${red}Unspecified package name or action${re}" 
         return 1
     fi
 
@@ -131,16 +131,18 @@ install_singbox() {
 
    # 生成随机端口和密码
     vless_port=$(shuf -i 1000-65535 -n 1) 
-    tuic_port=$(($vless_port + 1))
-    hy2_port=$(($vless_port + 2)) 
-    password=$(tr -dc A-Za-z < /dev/urandom | head -c 24)
+    vless_bru_port=$(($vless_port + 1)) 
+    tuic_port=$(($vless_port + 2))
+    hy2_port=$(($vless_port + 3)) 
     uuid=$(cat /proc/sys/kernel/random/uuid)
+    password=$(< /dev/urandom tr -dc 'A-Za-z0-9' | head -c 24)
     output=$(/etc/sing-box/sing-box generate reality-keypair)
     private_key=$(echo "${output}" | grep -oP 'PrivateKey:\s*\K.*')
     public_key=$(echo "${output}" | grep -oP 'PublicKey:\s*\K.*')
 
     iptables -A INPUT -p tcp --dport 8088 -j ACCEPT
     iptables -A INPUT -p tcp --dport $vless_port -j ACCEPT
+    iptables -A INPUT -p tcp --dport $vless_bru_port -j ACCEPT
     iptables -A INPUT -p udp --dport $hy2_port -j ACCEPT
     iptables -A INPUT -p udp --dport $tuic_port -j ACCEPT
 
@@ -170,7 +172,7 @@ cat > "${config_dir}" << EOF
   },
     "inbounds": [
     {
-     "tag": "vless-in",
+     "tag": "vless-tcp-vesion",
      "type": "vless",
      "listen": "::",
      "listen_port": ${vless_port},
@@ -198,7 +200,46 @@ cat > "${config_dir}" << EOF
     },
 
     {
-      "tag": "vmess-ws-in",
+      "tag": "VLESS-Reality+Padding+Brutal",
+      "type": "vless",
+      "listen": "::",
+      "listen_port": ${vless_bru_port},
+      "sniff": true,
+      "sniff_override_destination": false,
+      "users": [
+        {
+          "uuid": "${uuid}",
+          "flow": ""
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "itunes.apple.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "itunes.apple.com",
+            "server_port": 443
+          },
+          "private_key": "${private_key}",
+          "short_id": [
+            ""
+          ]
+        }
+      },
+      "multiplex": {
+        "enabled": true,
+        "padding": true,
+        "brutal": {
+          "enabled": true,
+          "up_mbps": 1000,
+          "down_mbps": 500
+        }
+      }
+    },
+
+    {
+      "tag": "vmess-ws",
       "type": "vmess",
       "listen": "::",
       "listen_port": 8088,
@@ -215,7 +256,7 @@ cat > "${config_dir}" << EOF
     },
 
     {
-       "tag": "hysteria-in",
+       "tag": "hysteria2",
        "type": "hysteria2",
        "listen": "::",
        "listen_port": ${hy2_port},
@@ -236,7 +277,7 @@ cat > "${config_dir}" << EOF
     },
 
     {
-      "tag": "tuic-in",
+      "tag": "tuic",
       "type": "tuic",
       "listen": "::",
       "listen_port": ${tuic_port},
@@ -265,8 +306,53 @@ cat > "${config_dir}" << EOF
     {
       "tag": "block",
       "type": "block"
+    },
+    {
+      "type": "wireguard",
+      "tag": "wireguard-out",
+      "server": "engage.cloudflareclient.com",
+      "server_port": 2408,
+      "local_address": [
+        "172.16.0.2/32",
+        "2606:4700:110:812a:4929:7d2a:af62:351c/128"
+      ],
+      "private_key": "gBthRjevHDGyV0KvYwYE52NIPy29sSrVr6rcQtYNcXA=",
+      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+      "reserved": [
+        6,
+        146,
+        6
+      ]
     }
-  ]
+  ],
+  "route": {
+    "geosite": {
+      "download_url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/release/geosite.db",
+      "download_detour": "direct"
+    },
+    "geoip": {
+      "download_url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/release/geoip.db",
+      "download_detour": "direct"
+    },
+    "rules": [
+      {
+        "geosite": [
+          "netflix",
+          "openai"
+        ],
+        "outbound": "wireguard-out"
+      },
+      {
+        "geosite": ["geolocation-cn", "tld-cn"],
+        "outbound": "wireguard-out"
+      },
+      {
+        "geoip": "cn",
+        "outbound": "wireguard-out"
+      }
+    ],
+    "final": "direct"
+  }
 }
 EOF
 }
@@ -367,6 +453,8 @@ get_info() {
   cat > ${work_dir}/url.txt <<EOF
 vless://${uuid}@${server_ip}:${vless_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.yahoo.com&fp=chrome&pbk=${public_key}&type=tcp&headerType=none#${isp}
 
+vless://${uuid}@${server_ip}:${vless_bru_port}?encryption=none&security=reality&sni=itunes.apple.com&fp=chrome&pbk=${public_key}&type=tcp&headerType=none&host=itunes.apple.com#${isp}
+
 vmess://$(echo "$VMESS" | base64 -w0)
 
 hysteria2://${uuid}@${server_ip}:${hy2_port}/?sni=www.bing.com&alpn=h3&insecure=1#${isp}
@@ -378,7 +466,8 @@ while IFS= read -r line; do echo -e "${purple}$line${re}"; done < ${work_dir}/ur
 base64 -w0 ${work_dir}/url.txt > ${work_dir}/sub.txt
 echo ""
 echo -e "${green}节点订阅链接：http://${server_ip}/${password}\n适用于V2rayN,Nekbox,Sterisand,小火箭,圈X等\n${re}"
-qrencode -t ANSIUTF8 -m 2 "http://${server_ip}/${password}\n"
+qrencode -t ANSIUTF8 -m 2 "http://${server_ip}/${password}"
+echo ""
 }
 
 # 修复nginx因host无法安装的问题
@@ -910,5 +999,5 @@ while true; do
            echo -e "${red}无效的选项，请输入 0 到 w${re}"
            ;;
    esac
-   read -n 1 -s -r -p $'\033[1;91m按任意键继续...\033[0m'
+   read -n 1 -s -r -p $'\033[1;91m按任意键继续...\033[0m' 
 done
